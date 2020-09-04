@@ -82,6 +82,10 @@ void usage(char *progname)
 		"#10: (SetWindowLongPtrA) " << std::endl << "\t+ VirtualAllocEx_WriteProcessMemory(Dyanmic PAYLOAD4)" << std::endl << std::endl <<
 		"#11: (SuspendThread/ResumeThread)* " << std::endl << "\t+ GhostWriting(Dyanmic ROP_CHAIN_2)" << std::endl << std::endl <<
 		"#12: (ProcessSuspendInjectAndResume) " << std::endl << "\t+ CreateFileMappingA_MapViewOfFile_NtUnmapViewOfSection_NtMapViewOfSection(Dyanmic PAYLOAD5) [Try on EXPLORER.EXE PID]" << std::endl << std::endl <<
+		"ROP - From Zero to Nation State in 25 Minutes" << std::endl << std::endl <<
+		"#13: (SuspendThread/ResumeThread)* " << std::endl << "\t+ NtQueueApcThread with memset(Dyanmic SIMPLE ROP PAYLOAD)" << std::endl << std::endl <<
+		"#14: (SuspendThread/ResumeThread)* " << std::endl << "\t+ NtQueueApcThread with memset(Dyanmic Rite of Passage ROP PAYLOAD)" << std::endl << std::endl <<
+		"#14: (SuspendThread/ResumeThread) " << std::endl << "\t+ WritePrcoessMemory with SetThreadContext (Stable Rite of Passage ROP PAYLOAD)" << std::endl << std::endl <<
 		"* - Requires Target Thread to be in Alertable State" << std::endl <<
 		"** - Requires Target to use ALPC Port" << std::endl;
 
