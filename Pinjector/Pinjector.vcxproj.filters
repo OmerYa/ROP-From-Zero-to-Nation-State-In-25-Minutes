@@ -77,9 +77,6 @@
     <ClCompile Include="DynamicPayloads.cpp">
       <Filter>Source Files\Payloads</Filter>
     </ClCompile>
-    <ClCompile Include="StaticPayloads.c">
-      <Filter>Source Files\Payloads</Filter>
-    </ClCompile>
     <ClCompile Include="SetWindowLongPtrA.cpp">
       <Filter>Source Files\ExecutionTechniques</Filter>
     </ClCompile>
@@ -109,6 +106,12 @@
     </ClCompile>
     <ClCompile Include="VAE_WPM.cpp">
       <Filter>Source Files\Writing Techniques\Advance</Filter>
+    </ClCompile>
+    <ClCompile Include="StaticPayloads.c">
+      <Filter>Source Files\Payloads</Filter>
+    </ClCompile>
+    <ClCompile Include="WPM_STC.cpp">
+      <Filter>Source Files\Writing Techniques\Complex</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -186,6 +189,9 @@
     </ClInclude>
     <ClInclude Include="ntapi.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="WPM_STC.h">
+      <Filter>Header Files\Writing Techniques</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

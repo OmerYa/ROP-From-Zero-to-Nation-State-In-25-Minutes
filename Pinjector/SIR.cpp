@@ -131,14 +131,21 @@ boolean CodeViaThreadSuspendInjectAndResume_Complex::inject(DWORD pid, DWORD tid
 	//printf("Thread's RSP=0x%016llx\n   Rip=0x%016llx", context.Rsp, context.Rip);
 	runtime_parameters["orig_tos"] = (DWORD64)context.Rsp;
 	runtime_parameters["tos"] = runtime_parameters["orig_tos"] - 0x2000;
+	runtime_parameters["context"] = (DWORD64)&context;
 
 	// Setup Target
+	target.pid = pid;
+	target.process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
 	target.thread = t;
 	target.tid = tid;
+
+	runtime_parameters["process_handle"] = (DWORD64)target.process;
 
 	this->m_memwriter->eval_and_write(&target, runtime_parameters);
 
 	ResumeThread(t);
+
+	return true;
 }
 
 // Used for Ghost Writing
@@ -185,6 +192,8 @@ boolean CodeViaThreadSuspendInjectAndResume_ChangeRspChangeRip_Complex::inject(D
 	SuspendThread(t);
 	SetThreadContext(t, &old_ctx);
 	ResumeThread(t);
+
+	return true;
 }
 
 /////////////////////
@@ -201,7 +210,6 @@ CodeViaProcessSuspendInjectAndResume_Complex::~CodeViaProcessSuspendInjectAndRes
 
 boolean CodeViaProcessSuspendInjectAndResume_Complex::inject(DWORD pid, DWORD tid)
 {
-	PINJECTRA_PACKET* output;
 	TARGET_PROCESS target;
 	TStrDWORD64Map runtime_parameters;
 

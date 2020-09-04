@@ -50,6 +50,14 @@
 #endif
 
 // Prototypes
-char* _gen_payload_1();
-char* _gen_payload_2();
-char* _gen_payload_3();
+#ifdef __cplusplus
+extern "C" {
+#endif
+	char* _gen_payload_1();
+	char* _gen_payload_2();
+	char* _gen_payload_3();
+#ifdef __cplusplus
+}
+#endif
+
+

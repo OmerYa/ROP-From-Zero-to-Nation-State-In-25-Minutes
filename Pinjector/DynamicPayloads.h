@@ -86,6 +86,34 @@ public:
 	PINJECTRA_PACKET* eval(TStrDWORD64Map& runtime_parameters);
 };
 
+class _ROP_CHAIN_PAYLOAD_SIMPLE :
+	public DynamicPayload
+{
+public:
+	PINJECTRA_PACKET* eval(TStrDWORD64Map& runtime_parameters);
+};
+
+class _ROP_CHAIN_PAYLOAD_ADVANCED :
+	public DynamicPayload
+{
+public:
+	PINJECTRA_PACKET* eval(TStrDWORD64Map& runtime_parameters);
+};
+
+class _ROP_CHAIN_PAYLOAD_ADVANCED_SAFE :
+	public DynamicPayload
+{
+public:
+	PINJECTRA_PACKET* eval(TStrDWORD64Map& runtime_parameters);
+};
+
+class _ROP_CHAIN_PAYLOAD_ADVANCED_SAFE_STABLE :
+	public DynamicPayload
+{
+public:
+	PINJECTRA_PACKET* eval(TStrDWORD64Map& runtime_parameters);
+};
+
 class _ROP_CHAIN_2 :
 	public DynamicPayload
 {
