@@ -1,6 +1,8 @@
 # ROP - From Zero to Nation State in 25 Minutes
 The code and slides are from a [talk I gave at BSidesTLV 2020](https://www.youtube.com/watch?v=jzuPqvfogRQ&ab_channel=BSidesTLV). The code is a modification of Pinjectra project from SafeBreach developed by Itzik Kotler and Amit Klein.
 
+Injection methods 13, 14 and 15 were added to Pinjectra for demo examples on the talk. (Tested on Windows 10 1903 x64 bit)
+
 # Pinjectra
 Pinjectra is a C/C++ library that implements Process Injection techniques (with focus on Windows 10 64-bit) in a "mix and match" style. Here's an example:
 
